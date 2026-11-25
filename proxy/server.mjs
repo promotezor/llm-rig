@@ -11,13 +11,22 @@ const EXA_LIMIT = Number(process.env.EXA_MONTHLY_LIMIT || 10)
 const USAGE_FILE = process.env.USAGE_FILE || '/data/usage.json'
 const RATE_WINDOW_MS = 60000
 const RATE_MAX = Number(process.env.RATE_LIMIT_PER_MIN || 60)
+const DAILY_CAP = Number(process.env.SEARCH_DAILY_CAP || 0)
 
 const hits = new Map()
 let tavilyCache = { at: 0, data: null }
+let searchEnabled = true
+
+function today() { return new Date().toISOString().slice(0, 10) }
 
 function json(res, code, body) {
   res.writeHead(code, { 'content-type': 'application/json' })
   res.end(JSON.stringify(body))
+}
+
+function html(res, code, body) {
+  res.writeHead(code, { 'content-type': 'text/html; charset=utf-8' })
+  res.end(body)
 }
 
 async function readBody(req) {
@@ -47,9 +56,15 @@ function rateLimited(ip) {
 
 async function loadUsage() {
   try {
-    return JSON.parse(await readFile(USAGE_FILE, 'utf8'))
+    const u = JSON.parse(await readFile(USAGE_FILE, 'utf8'))
+    if (u.day !== today()) { u.day = today(); u.queries_today = 0 }
+    if (typeof u.search_enabled !== 'boolean') u.search_enabled = true
+    return u
   } catch {
-    return { exa_spent_usd: 0, exa_queries: 0, month: new Date().toISOString().slice(0, 7) }
+    return {
+      exa_spent_usd: 0, exa_queries: 0, month: today().slice(0, 7),
+      day: today(), queries_today: 0, search_enabled: true,
+    }
   }
 }
 
@@ -106,21 +121,89 @@ async function searchExa(query, num) {
   return { provider: 'exa', query, results, cost }
 }
 
+function page() {
+  return `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm-rig</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 460px; margin: 40px auto; padding: 0 16px; background: #111; color: #eee; }
+  input, button { font-size: 16px; padding: 9px 12px; border-radius: 6px; border: 1px solid #444; }
+  input { background: #222; color: #eee; width: 100%; box-sizing: border-box; }
+  button { background: #333; color: #eee; cursor: pointer; }
+  button:hover { background: #444; }
+  .row { margin: 16px 0; }
+  .on { color: #6f6; font-weight: bold; }
+  .off { color: #f66; font-weight: bold; }
+  pre { background: #1a1a1a; padding: 12px; border-radius: 6px; font-size: 13px; line-height: 1.5; }
+</style>
+<h1>llm-rig</h1>
+<div class="row">
+  <input id="key" type="password" placeholder="PROXY_API_KEY">
+</div>
+<div class="row">
+  поиск: <span id="status">-</span>
+  <button id="toggle">переключить</button>
+</div>
+<pre id="usage">загрузка...</pre>
+<script>
+const el = (id) => document.getElementById(id)
+const auth = () => ({ 'Authorization': 'Bearer ' + el('key').value })
+async function refresh() {
+  try {
+    const u = await (await fetch('/usage', { headers: auth() })).json()
+    const t = u.tavily, e = u.exa, s = u.search
+    el('status').textContent = s.enabled ? 'ВКЛ' : 'ВЫКЛ'
+    el('status').className = s.enabled ? 'on' : 'off'
+    el('usage').innerHTML = [
+      'Tavily остаток: ' + (t.available ? (t.remaining == null ? 'без лимита' : t.remaining) : 'нет ключа'),
+      'Exa остаток: $' + (e.available ? e.remaining_usd : 'нет ключа'),
+      'запросов сегодня: ' + s.queries_today + (s.daily_cap ? ' / ' + s.daily_cap : ''),
+    ].join('<br>')
+  } catch (err) {
+    el('usage').textContent = 'ошибка: проверь ключ'
+  }
+}
+el('toggle').onclick = async () => {
+  await fetch('/toggle', { method: 'POST', headers: { 'content-type': 'application/json', ...auth() }, body: '{}' })
+  refresh()
+}
+el('key').onchange = refresh
+refresh()
+</script>
+`
+}
+
 const server = http.createServer(async (req, res) => {
   const ip = (req.socket.remoteAddress || '').replace('::ffff:', '')
   if (rateLimited(ip)) return json(res, 429, { error: 'rate limited' })
-  if (!authorized(req)) return json(res, 401, { error: 'unauthorized' })
 
   const url = new URL(req.url, `http://${req.headers.host}`)
 
+  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+    return html(res, 200, page())
+  }
+
+  if (!authorized(req)) return json(res, 401, { error: 'unauthorized' })
+
   if (req.method === 'GET' && url.pathname === '/health') {
-    return json(res, 200, { ok: true })
+    return json(res, 200, { ok: true, search_enabled: searchEnabled })
+  }
+
+  if (req.method === 'POST' && url.pathname === '/toggle') {
+    const body = await readBody(req)
+    const u = await loadUsage()
+    u.search_enabled = typeof body.search === 'boolean' ? body.search : !u.search_enabled
+    searchEnabled = u.search_enabled
+    await saveUsage(u)
+    return json(res, 200, { search_enabled: u.search_enabled })
   }
 
   if (req.method === 'GET' && url.pathname === '/usage') {
     try {
       const u = await loadUsage()
-      const month = new Date().toISOString().slice(0, 7)
+      searchEnabled = u.search_enabled
+      const month = today().slice(0, 7)
       if (u.month !== month) { u.month = month; u.exa_spent_usd = 0; u.exa_queries = 0 }
       let tavily = { available: false }
       if (TAVILY_KEY) {
@@ -144,6 +227,7 @@ const server = http.createServer(async (req, res) => {
           remaining_usd: Math.max(0, EXA_LIMIT - u.exa_spent_usd),
           queries: u.exa_queries,
         },
+        search: { enabled: u.search_enabled, queries_today: u.queries_today, daily_cap: DAILY_CAP },
       })
     } catch (e) {
       return json(res, 500, { error: String(e.message) })
@@ -154,21 +238,27 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req)
     const query = body.query
     if (!query) return json(res, 400, { error: 'query required' })
+    const u = await loadUsage()
+    if (!u.search_enabled) return json(res, 403, { error: 'search disabled' })
+    if (DAILY_CAP > 0 && u.queries_today >= DAILY_CAP) return json(res, 429, { error: 'daily search limit reached' })
     const provider = (body.provider || url.searchParams.get('provider') || DEFAULT_PROVIDER).toLowerCase()
     const num = body.numResults || Number(url.searchParams.get('num') || 5)
     try {
       if (provider === 'exa') {
         const out = await searchExa(query, num)
         if (EXA_KEY) {
-          const u = await loadUsage()
           u.exa_spent_usd = (u.exa_spent_usd || 0) + (out.cost || 0)
           u.exa_queries = (u.exa_queries || 0) + 1
-          u.month = new Date().toISOString().slice(0, 7)
-          await saveUsage(u)
+          u.month = today().slice(0, 7)
         }
+        u.queries_today = (u.queries_today || 0) + 1
+        await saveUsage(u)
         return json(res, 200, out)
       }
-      return json(res, 200, await searchTavily(query, num))
+      const out = await searchTavily(query, num)
+      u.queries_today = (u.queries_today || 0) + 1
+      await saveUsage(u)
+      return json(res, 200, out)
     } catch (e) {
       return json(res, 502, { error: String(e.message) })
     }

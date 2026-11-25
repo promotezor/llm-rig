@@ -3,118 +3,121 @@
 [Русская версия](README.ru.md)
 
 Run a large local LLM (Qwen3.8-27B uncensored) with 256k context on a rented
-RTX 5090 (32 GB), RAM-only, plus a tiny zero-dependency search proxy that routes
-web search to Tavily or Exa with per-provider credit tracking.
+RTX 5090 (32 GB), RAM-only, plus a tiny zero-dependency search proxy with an
+on/off toggle and per-provider credit tracking (Tavily / Exa).
 
 Everything binds to 127.0.0.1. Nothing is exposed to the internet. You reach the
 box over an SSH tunnel.
 
-## What's inside
+## Part 1 - first run on a fresh server (once)
 
-- `llama` - llama.cpp `llama-server` compiled for Blackwell (sm_120),
-  OpenAI-compatible API on `127.0.0.1:8080/v1`
-- `proxy` - zero-dependency Node proxy on `127.0.0.1:8000` for web search
-  (Tavily / Exa) with provider switch and usage view
-- model + all runtime data live in tmpfs (`/mnt/ram`), wiped on teardown
+A freshly rented box with nothing installed. Run these on the server itself.
 
-## Requirements (on the rented box)
+1. SSH in. The address and SSH access come from clore when you rent the box
+```
+ssh root@<server-ip>
+```
 
-- NVIDIA RTX 5090 (32 GB), recent driver
-- ~64 GB RAM recommended (model + KV cache live in tmpfs; 32 GB RAM is tight)
-- Docker + NVIDIA Container Toolkit (`setup.sh` installs them if missing)
+2. Clone the repo. It is public, no keys needed
+```
+git clone https://github.com/promotezor/llm-rig.git
+cd llm-rig
+```
 
-## Quick start
-
-1. Copy the config and fill in the keys
+3. Create the config and fill in 4 keys
 ```
 cp .env.example .env
+nano .env
 ```
-Four values to set in `.env`:
+Four values in `.env`:
 
-- `TAVILY_API_KEY`, `EXA_API_KEY` - keys from those two services (free tiers, no card)
-- `LLM_API_KEY`, `PROXY_API_KEY` - passwords you invent yourself, they lock the
-  LLM and search endpoints. Generate two with `openssl rand -hex 16` and paste
-  them here and share with whoever uses the rig.
+- `TAVILY_API_KEY` and `EXA_API_KEY` - keys from those two services, from their dashboards
+- `LLM_API_KEY` and `PROXY_API_KEY` - passwords you invent yourself. Generate two with
+  `openssl rand -hex 16` and paste them. Share them with whoever uses the rig.
 
-2. Run the setup
+4. Run the setup
 ```
 ./scripts/setup.sh
 ```
-It mounts tmpfs, downloads the model, builds and starts the containers.
+Installs docker + nvidia-toolkit if missing, mounts tmpfs, downloads the model, builds and
+starts the containers. Slow the first time (~10-15 min) because llama.cpp compiles for the GPU.
 
-3. From your laptop, open an SSH tunnel
+Done. The model is running and waiting for connections. Part 1 is repeated only when you rent
+a new box.
+
+## Part 2 - connect when it is already running (every time)
+
+You and your friends do this. One command, then everything is in the browser.
+
+1. Open a tunnel from your laptop (keep this window open while you use it)
 ```
 ssh -L 8080:127.0.0.1:8080 -L 8000:127.0.0.1:8000 root@<server-ip>
 ```
-4. Use the endpoints below.
+The services are closed off from the internet; this command forwards their ports to your
+laptop, so `localhost:8080` and `localhost:8000` work as if you were on the server.
 
-## SSH tunnel, why
+2. Open the control panel in a browser
+```
+http://127.0.0.1:8000
+```
+Paste `PROXY_API_KEY` once. You see the Tavily/Exa balances and a button to toggle search.
 
-The services listen on 127.0.0.1 only, so nothing is open to the internet. The
-tunnel is how you reach them from your laptop through the one port that is open
-(SSH, port 22).
+3. Point your chat client at the model
+- address `http://127.0.0.1:8080/v1`
+- API key - your `LLM_API_KEY`
 
-`ssh -L 8080:127.0.0.1:8080` means "take whatever hits port 8080 on my laptop
-and forward it over SSH to port 8080 on the server's localhost". So
-`http://127.0.0.1:8080` on your laptop is really the server's `127.0.0.1:8080`.
+## Toggle search on/off during a session
 
-The shape is `-L <local-port>:<remote-host>:<remote-port>`; since the services
-are bound to the server's localhost, `remote-host` stays `127.0.0.1`.
+Open `http://127.0.0.1:8000` and press the toggle button. State lives in tmpfs, survives a
+proxy restart, resets with the rental. While search is off, `/search` returns 403 and nothing
+is sent to Tavily/Exa.
 
-## Endpoints
+## Search proxy (for direct API use)
 
-- LLM: `http://127.0.0.1:8080/v1` (OpenAI-compatible, header `Authorization: Bearer $LLM_API_KEY`)
-- Search: `http://127.0.0.1:8000` (header `Authorization: Bearer $PROXY_API_KEY`)
-
-## Search proxy
-
-- `POST /search` with `{"query": "...", "provider": "tavily|exa"}` - provider is
-  optional, defaults to `SEARCH_PROVIDER`
-- `GET /usage` returns remaining credits for both providers (Tavily via its
-  `/usage` endpoint, Exa via a local spend counter)
+- `POST /search` with `{"query": "...", "provider": "tavily|exa"}` - provider is optional,
+  defaults to `SEARCH_PROVIDER`
+- `GET /usage` - remaining credits for both providers plus the search state
+- `POST /toggle` with `{"search": true|false}` - enable or disable search
 - switch provider per request with `?provider=exa` or the `provider` body field
+- `SEARCH_DAILY_CAP` in `.env` - hard daily query limit, 0 means no limit
 
 ## Model
 
-Default model is `ThinkingCap-Qwen3.8-27B-Uncensored-Heretic` (IQ4_XS GGUF),
-which keeps the Qwen3.8 thinking mode while the Heretic ablation removes
-refusals. It thinks by default.
+Default model is `ThinkingCap-Qwen3.8-27B-Uncensored-Heretic` (IQ4_XS GGUF), which keeps the
+Qwen3.8 thinking mode while the Heretic ablation removes refusals. It thinks by default.
 
-Fits 32 GB with 256k context - ~15 GB weights + ~8.6 GB KV cache (q8_0) +
-activations. KV cache uses q8_0 because F16 KV does not fit 256k on 32 GB and
-BF16 KV is reported unstable on this family at long context.
+Fits 32 GB with 256k context - ~15 GB weights + ~8.6 GB KV cache (q8_0) + activations. KV cache
+uses q8_0 because F16 KV does not fit 256k on 32 GB and BF16 KV is reported unstable on this
+family at long context.
 
 Apache-2.0 alternative - switch `MODEL_REPO` in `.env` to
-`mlasli/Qwen3.8-27B-Heretic-Uncensored-IQ4_XS-GGUF`. With that one, uncensored
-behavior requires thinking OFF (the ThinkingCap default keeps thinking).
+`mlasli/Qwen3.8-27B-Heretic-Uncensored-IQ4_XS-GGUF`. With that one, uncensored behavior requires
+thinking OFF (the ThinkingCap default keeps thinking).
 
 For quants without preserved thinking, toggle it per request via
-`chat_template_kwargs: {"enable_thinking": true}` or `reasoning_effort` in the
-OpenAI-compatible API.
+`chat_template_kwargs: {"enable_thinking": true}` or `reasoning_effort` in the OpenAI-compatible API.
 
-License note - ThinkingCap is PolyForm Small Business, not Apache-2.0. Fine for
-personal use. The mlasli alternative is Apache-2.0.
+License note - ThinkingCap is PolyForm Small Business, not Apache-2.0. Fine for personal use.
+The mlasli alternative is Apache-2.0.
 
 ## Friends (multi-user)
 
-Each friend needs SSH access to the box to use the tunnel. Two options:
+Each friend needs SSH access to the box to open the Part 2 tunnel. Two options:
 
-- Add each friend's public key to the box (`~/.ssh/authorized_keys`), they run
-  the same `ssh -L ...` command from their laptop. Private, nothing extra is
-  exposed. Recommended.
-- Or bind the services to `0.0.0.0` instead of `127.0.0.1` in
-  `docker-compose.yml` and let friends hit `http://<server-ip>:8080` directly.
-  Simpler, but the ports become public and scannable, protected only by the API
-  keys. Not recommended.
+- Add the friend's public key to `~/.ssh/authorized_keys` on the box, and they run the same
+  `ssh -L ...` command from their laptop. Private, nothing extra is exposed. Recommended.
+- Or bind the services to `0.0.0.0` instead of `127.0.0.1` in `docker-compose.yml` and let
+  friends hit `http://<server-ip>:8080` directly. Simpler, but the ports become public and
+  scannable, protected only by the API keys. Not recommended.
 
 Either way, friends use the same `LLM_API_KEY` / `PROXY_API_KEY` from `.env`.
 
 ## Privacy
 
-- model, logs, and proxy state live in tmpfs at `/mnt/ram`, unmounted on
-  teardown, nothing persists on disk
-- this protects against data left on the host after you stop; it does not
-  protect against a live malicious host reading RAM/VRAM
+- model, logs, and proxy state live in tmpfs at `/mnt/ram`, unmounted on teardown, nothing
+  persists on disk
+- this protects against data left on the host after you stop; it does not protect against a
+  live malicious host reading RAM/VRAM
 
 ## Security
 
@@ -128,15 +131,15 @@ Either way, friends use the same `LLM_API_KEY` / `PROXY_API_KEY` from `.env`.
 
 Three levels, from light to full:
 
-- `docker compose stop` / `docker compose start` - pause and resume the
-  containers. The model stays in tmpfs, restart is fast. You still pay for the box.
-- `./scripts/teardown.sh` - stop and remove containers + images, unmount tmpfs,
-  delete `.env`. Clean slate, but the box is still rented.
-- Stop the rental on clore.ai - this is what actually stops the per-minute
-  billing. The box and everything on it is gone.
+- `docker compose stop` / `docker compose start` - pause and resume the containers. The model
+  stays in tmpfs, restart is fast. You still pay for the box.
+- `./scripts/teardown.sh` - stop and remove containers + images, unmount tmpfs, delete `.env`.
+  Clean slate, but the box is still rented.
+- Stop the rental on clore.ai - this is what actually stops the per-minute billing. The box and
+  everything on it is gone.
 
 ## Build note
 
-The llama.cpp CUDA build (Blackwell kernels) takes ~10-15 min the first time.
-To avoid rebuilding on every rental, push the image once to a registry (GHCR)
-and point `image:` at it instead of building.
+The llama.cpp CUDA build (Blackwell kernels) takes ~10-15 min the first time. To avoid
+rebuilding on every rental, push the image once to a registry (GHCR) and point `image:` at it
+instead of building.

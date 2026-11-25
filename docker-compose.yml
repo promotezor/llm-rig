@@ -26,6 +26,7 @@ services:
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-tavily}
       EXA_MONTHLY_LIMIT: ${EXA_MONTHLY_LIMIT:-10}
       RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-60}
+      SEARCH_DAILY_CAP: ${SEARCH_DAILY_CAP:-0}
       PORT: "8000"
       USAGE_FILE: /data/usage.json
     volumes:
