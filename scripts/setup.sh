@@ -30,6 +30,15 @@ set -a
 . ./.env
 set +a
 
+DOCKER_TMPFS="${DOCKER_TMPFS:-0}"
+if [ "$DOCKER_TMPFS" != "0" ] && ! mountpoint -q /var/lib/docker; then
+  systemctl stop docker 2>/dev/null || true
+  mkdir -p /var/lib/docker
+  mount -t tmpfs -o "size=$DOCKER_TMPFS" tmpfs /var/lib/docker
+  systemctl start docker 2>/dev/null || true
+  echo "docker on tmpfs ($DOCKER_TMPFS)" >&2
+fi
+
 RAM_DIR="${RAM_DIR:-/mnt/ram}"
 RAM_SIZE="${RAM_SIZE:-24G}"
 
