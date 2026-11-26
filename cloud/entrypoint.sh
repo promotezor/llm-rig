@@ -2,9 +2,21 @@
 set -uo pipefail
 
 LOG_FILE="${LOG_FILE:-/dev/shm/llm-rig.log}"
+STATUS_FILE="${STATUS_FILE:-/dev/shm/llm-rig.status.json}"
+STATUS_PORT="${STATUS_PORT-8080}"
+STATUS_PID=""
+START_EPOCH="$(date +%s)"
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { printf '%s [llm-rig] %s\n' "$(ts)" "$*"; }
-die() { log "error: $*"; exit 1; }
+die() { write_status failed "$*"; log "error: $*"; exit 1; }
+
+write_status() {
+  printf '{"stage":"%s","note":"%s","updated":"%s","elapsed_s":%s,"gpu":"%s","vram_mib":%s,"storage":"%s","model":"%s","model_bytes":%s,"model_expected":%s,"context":%s,"llama_port":%s}\n' \
+    "$1" "$2" "$(ts)" "$(( $(date +%s) - START_EPOCH ))" \
+    "${GPU_NAME:-}" "${TOTAL_VRAM_MIB:-0}" "${MODEL_DIR:-}" "${MODEL_FILE:-}" \
+    "${MODEL_BYTES:-0}" "${EXPECTED:-0}" "${CTX:-0}" "${LLAMA_PORT:-8080}" \
+    > "$STATUS_FILE.tmp" 2>/dev/null && mv "$STATUS_FILE.tmp" "$STATUS_FILE" 2>/dev/null
+}
 
 if mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null && [ -w "$(dirname "$LOG_FILE")" ]; then
   exec > >(tee -a "$LOG_FILE") 2>&1
@@ -12,6 +24,27 @@ if mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null && [ -w "$(dirname "$LOG_FILE")
 fi
 
 log "start: pid $$, host $(hostname), $(uname -sr)"
+write_status booting "script started"
+
+if [ -n "$STATUS_PORT" ] && command -v node >/dev/null 2>&1; then
+  STATUS_PORT="$STATUS_PORT" STATUS_FILE="$STATUS_FILE" LOG_FILE="$LOG_FILE" node /app/status.mjs &
+  STATUS_PID=$!
+  log "status page on 0.0.0.0:$STATUS_PORT (open the public address to follow progress)"
+fi
+
+SSH_PORT="${SSH_PORT:-2222}"
+if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+  mkdir -p /root/.ssh /run/sshd && chmod 700 /root/.ssh
+  printf '%s\n' "$SSH_PUBLIC_KEY" | tr -d '\r' > /root/.ssh/authorized_keys
+  chmod 600 /root/.ssh/authorized_keys
+  if /usr/sbin/sshd -e -p "$SSH_PORT" 2>>"$LOG_FILE"; then
+    log "ssh is up on port $SSH_PORT for root (key from SSH_PUBLIC_KEY)"
+  else
+    log "warning: sshd did not start, debugging over ssh is unavailable"
+  fi
+else
+  log "SSH_PUBLIC_KEY not set, skipping sshd (debug access disabled)"
+fi
 
 MODEL_REPO="${MODEL_REPO:-mradermacher/ThinkingCap-Qwen3.8-27B-Uncensored-Heretic-GGUF}"
 MODEL_BASE="${MODEL_BASE:-ThinkingCap-Qwen3.8-27B-Uncensored-Heretic}"
@@ -68,7 +101,7 @@ for d in $CANDIDATES; do
   free_mib="$(df -Pm "$d" 2>/dev/null | awk 'NR==2{print $4}')"
   fstype="$(stat -f -c %T "$d" 2>/dev/null || echo unknown)"
   [ -n "${free_mib:-}" ] || free_mib=0
-  log "storage candidate $d: $((free_mib/1024)) GB free, type=$fstype"
+log "storage candidate $d: $((free_mib/1024)) GB free, type=$fstype"
   if [ "${free_mib:-0}" -ge "$NEED_MIB" ]; then PICKED="$d"; break; fi
 done
 
@@ -77,6 +110,7 @@ MODEL_DIR="$PICKED"
 MODEL_PATH="$MODEL_DIR/$MODEL_FILE"
 log "using storage $MODEL_DIR"
 log "gpu $GPU_NAME x$GPU_COUNT, vram ${VRAM_MIB}MiB per card, ${TOTAL_VRAM_MIB}MiB total"
+write_status ready "gpu and storage picked, starting model download"
 
 if [ -f "$MODEL_PATH" ] && { [ "$EXPECTED" -eq 0 ] || [ "$(stat -c%s "$MODEL_PATH")" -eq "$EXPECTED" ]; }; then
   log "model already present"
@@ -91,10 +125,13 @@ else
       sleep "$LOG_INTERVAL"
       if [ -f "$MODEL_PATH.part" ]; then
         cur="$(stat -c%s "$MODEL_PATH.part")"
+        MODEL_BYTES="$cur"
         if [ "$EXPECTED" -gt 0 ]; then
           log "downloaded $((cur/1048576)) MiB / $((EXPECTED/1048576)) MiB ($((cur * 100 / EXPECTED))%)"
+          write_status downloading "$((cur * 100 / EXPECTED))% of the model"
         else
           log "downloaded $((cur/1048576)) MiB"
+          write_status downloading "$((cur/1048576)) MiB downloaded"
         fi
       else
         log "waiting for download to start"
@@ -135,14 +172,28 @@ fi
 log "versions: llama-server $(llama-server --version 2>&1 | head -1), node $(node --version 2>/dev/null || echo none)"
 log "model $MODEL_FILE ($((MODEL_MIB/1024)) GB) on $MODEL_DIR"
 log "context $CTX tokens, kv cache q8_0, vram ${TOTAL_VRAM_MIB}MiB"
-log "llama-server on $BIND:$LLAMA_PORT (api key is set, see LLM_API_KEY)"
+log "llama-server will listen on $BIND:$LLAMA_PORT"
+write_status loading "model ready, loading into vram"
+
+if [ -n "$STATUS_PID" ]; then
+  write_status launching "giving port $STATUS_PORT to llama-server"
+  for _ in $(seq 1 30); do
+    curl -sf -m 2 -o /dev/null "http://127.0.0.1:$STATUS_PORT/status" || break
+    sleep 1
+  done
+  kill "$STATUS_PID" 2>/dev/null || true
+  wait "$STATUS_PID" 2>/dev/null || true
+  sleep 1
+  log "status page stopped, port $STATUS_PORT is free"
+fi
+
 log "waiting for the server to answer on /health"
 
 (
   i=0
   while [ "$i" -lt 240 ]; do
     if curl -sf -m 3 -o /dev/null "http://127.0.0.1:$LLAMA_PORT/health"; then
-      log "server is ready, open http://<public-address>/ and enter the api key"
+      log "server is ready, open the public address and enter the api key"
       exit 0
     fi
     i=$((i + 1))

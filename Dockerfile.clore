@@ -5,9 +5,14 @@ FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl wget libgomp1 tini \
+    && apt-get install -y --no-install-recommends ca-certificates curl wget libgomp1 tini openssh-server \
     && (apt-get install -y --no-install-recommends libnccl2 || true) \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && ssh-keygen -A \
+    && printf 'Port 2222\nPermitRootLogin prohibit-password\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\n' \
+       > /etc/ssh/sshd_config.d/llm-rig.conf
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
@@ -26,8 +31,15 @@ RUN mkdir -p /opt/llama \
 
 WORKDIR /app
 COPY proxy/server.mjs /app/server.mjs
+COPY cloud/status.mjs /app/status.mjs
 COPY cloud/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+COPY cloud/launch.sh /app/launch.sh
+RUN chmod +x /app/entrypoint.sh /app/launch.sh
 
+COPY cloud/llm-rig.service /etc/systemd/system/llm-rig.service
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants \
+    && ln -sf /etc/systemd/system/llm-rig.service /etc/systemd/system/multi-user.target.wants/llm-rig.service
+
+ENV STATUS_PORT=8080
 EXPOSE 8080 8000
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]

@@ -48,8 +48,8 @@ run_case() {
   echo "=== $label (vram ${vram}MiB x$count, model $((bytes/1073741824))GB) ==="
   rm -rf "$T/store"; mkdir -p "$T/store"
   PATH="$T/bin:$PATH" FAKE_VRAM="$vram" FAKE_GPU_COUNT="$count" FAKE_MODEL_BYTES="$bytes" \
-    LOG_INTERVAL=1 LOG_FILE="$T/store/app.log" MODEL_DIR="$T/store" bash "$HERE/cloud/entrypoint.sh" 2>&1 \
-    | grep -E 'using storage|gpu |downloading|downloaded|model ready|context |llama-server on|server is ready|LLAMA-ARGS' \
+    STATUS_PORT= LOG_INTERVAL=1 LOG_FILE="$T/store/app.log" STATUS_FILE="$T/store/status.json" MODEL_DIR="$T/store" bash "$HERE/cloud/entrypoint.sh" 2>&1 \
+    | grep -E 'using storage|gpu |downloading|downloaded|model ready|context |llama-server will|server is ready|LLAMA-ARGS' \
     | sed "s|$T/store|STORE|g"
   echo
 }
