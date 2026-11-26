@@ -9,6 +9,26 @@ on/off toggle and per-provider credit tracking (Tavily / Exa).
 Everything binds to 127.0.0.1. Nothing is exposed to the internet. You reach the
 box over an SSH tunnel.
 
+## Prebuilt clore image - paste and go
+
+Built in GitHub Actions on every push to main, published to GHCR. Contains llama.cpp (CUDA
+12.8, sm_120), the search proxy, and an entrypoint that downloads the model and starts the
+server.
+
+1. In clore choose **Custom Docker image** and paste
+```
+ghcr.io/promotezor/llm-rig:latest
+```
+2. Environment variables: add `LLM_API_KEY` (otherwise a random one is generated and printed
+   in the logs). Optional: `TAVILY_API_KEY`, `EXA_API_KEY`, `CTX`.
+3. Port forwarding: add **8080 TCP** (chat) and optionally **8000 TCP** (search panel).
+4. Deploy. The first ~15 minutes are the model download in the logs, then `server is listening`.
+
+Open the address clore gives in My Orders, e.g. `http://n1.de.clorecloud.net:<port>/`.
+
+One-time: the GHCR package is private by default. Make it public (GitHub, profile, Packages,
+llm-rig, Package settings, Change visibility, Public), otherwise clore cannot pull it.
+
 ## Part 1 - first run on a fresh server (once)
 
 A freshly rented box with nothing installed. Run these on the server itself.

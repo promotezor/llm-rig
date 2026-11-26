@@ -8,8 +8,31 @@ RTX 5090 (32 GB). Все в оперативной памяти. Есть пои
 
 Два способа запуска -
 
-- `scripts/setup-nodocker.sh` - для контейнеров clore (стандартный rental), без docker, основной путь для аренды GPU
+- `ghcr.io/promotezor/llm-rig:latest` - готовый образ, в clore вставил имя и все (основной путь)
+- `scripts/setup-nodocker.sh` - ручной монтаж внутри контейнера clore, если образ не подошел
 - `scripts/setup.sh` - docker-путь, для полного сервера (bare metal) с docker и tmpfs
+
+## Образ для clore - вставил имя и готово
+
+Образ собирается в GitHub Actions при пуше в main и лежит в GHCR. Внутри готовое: llama.cpp
+под CUDA 12.8 (sm_120), поисковый прокси и стартовый скрипт, который сам качает модель и
+поднимает сервер.
+
+1. В clore при аренде выбери **Custom Docker image** и вставь
+```
+ghcr.io/promotezor/llm-rig:latest
+```
+2. В Environment variables добавь `LLM_API_KEY` со своим паролем (иначе сгенерируется
+   случайный и будет виден в логах). Опционально `TAVILY_API_KEY`, `EXA_API_KEY`, `CTX`.
+3. В Port forwarding добавь **8080 TCP** (для чата) и при желании **8000 TCP** (панель поиска).
+4. Запускай. Первые ~15 минут в логах идет скачивание модели, потом `server is listening`.
+
+Адрес для входа clore выдаст в My Orders (вида `n1.de.clorecloud.net:порт`). Открываешь в
+браузере `http://<этот-адрес>/`, вставляешь ключ и общаешься.
+
+Перед первым использованием один раз: пакет в GHCR по умолчанию приватный, сделай его
+публичным (GitHub, профиль, Packages, llm-rig, Package settings, Change visibility, Public).
+Иначе clore не сможет его скачать без своих registry-логинов.
 
 ## Часть 1 - первый запуск на новом сервере (один раз)
 

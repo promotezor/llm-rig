@@ -1,0 +1,31 @@
+FROM node:22-bookworm-slim AS node
+
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates wget libgomp1 tini \
+    && (apt-get install -y --no-install-recommends libnccl2 || true) \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+
+ARG LLAMA_URL=https://github.com/ai-dock/llama.cpp-cuda/releases/download/v1.0.0/llama.cpp-v1.0.0-cuda-12.8-amd64.tar.gz
+RUN mkdir -p /opt/llama \
+    && cd /opt/llama \
+    && wget -q "$LLAMA_URL" -O llama.tar.gz \
+    && tar xzf llama.tar.gz \
+    && rm -f llama.tar.gz \
+    && llama-server --version
+
+ENV PATH=/opt/llama/cuda-12.8:$PATH \
+    LD_LIBRARY_PATH=/opt/llama/cuda-12.8
+
+WORKDIR /app
+COPY proxy/server.mjs /app/server.mjs
+COPY cloud/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+EXPOSE 8080 8000
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
