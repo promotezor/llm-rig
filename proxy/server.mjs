@@ -176,9 +176,12 @@ refresh()
 
 const server = http.createServer(async (req, res) => {
   const ip = (req.socket.remoteAddress || '').replace('::ffff:', '')
-  if (rateLimited(ip)) return json(res, 429, { error: 'rate limited' })
-
   const url = new URL(req.url, `http://${req.headers.host}`)
+  const started = Date.now()
+  res.on('finish', () => {
+    console.log(`${new Date().toISOString()} ${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - started}ms`)
+  })
+  if (rateLimited(ip)) return json(res, 429, { error: 'rate limited' })
 
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     return html(res, 200, page())

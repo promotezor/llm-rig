@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-log() { echo "[llm-rig] $*"; }
-die() { echo "[llm-rig] error: $*" >&2; exit 1; }
+LOG_FILE="${LOG_FILE:-/dev/shm/llm-rig.log}"
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '%s [llm-rig] %s\n' "$(ts)" "$*"; }
+die() { log "error: $*"; exit 1; }
+
+if mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null && [ -w "$(dirname "$LOG_FILE")" ]; then
+  exec > >(tee -a "$LOG_FILE") 2>&1
+  log "logging to stdout and $LOG_FILE"
+fi
+
+log "start: pid $$, host $(hostname), $(uname -sr)"
 
 MODEL_REPO="${MODEL_REPO:-mradermacher/ThinkingCap-Qwen3.8-27B-Uncensored-Heretic-GGUF}"
 MODEL_BASE="${MODEL_BASE:-ThinkingCap-Qwen3.8-27B-Uncensored-Heretic}"
@@ -13,9 +22,10 @@ OVERHEAD_MIB="${OVERHEAD_MIB:-2500}"
 MAX_CTX="${MAX_CTX:-262144}"
 MIN_CTX="${MIN_CTX:-8192}"
 BYTES_PER_TOKEN="${BYTES_PER_TOKEN:-32768}"
+LOG_INTERVAL="${LOG_INTERVAL:-30}"
 
-command -v nvidia-smi >/dev/null 2>&1 || die "no nvidia-smi in container"
-nvidia-smi -L || true
+command -v nvidia-smi >/dev/null 2>&1 || die "no nvidia-smi in container (image must run with GPU access)"
+while read -r line; do log "gpu $line"; done < <(nvidia-smi -L)
 
 GPU_COUNT="$(nvidia-smi -L | grep -c '^GPU' || true)"
 VRAM_MIB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d ' ')"
@@ -71,11 +81,26 @@ log "gpu $GPU_NAME x$GPU_COUNT, vram ${VRAM_MIB}MiB per card, ${TOTAL_VRAM_MIB}M
 if [ -f "$MODEL_PATH" ] && { [ "$EXPECTED" -eq 0 ] || [ "$(stat -c%s "$MODEL_PATH")" -eq "$EXPECTED" ]; }; then
   log "model already present"
 else
-  log "downloading $MODEL_FILE to $MODEL_DIR (~$((NEED_MIB/1024)) GB needed)"
+  log "downloading $MODEL_FILE to $MODEL_DIR (need ~$((NEED_MIB/1024)) GB free)"
   log "url $MODEL_URL"
   attempt=1
   while [ "$attempt" -le 5 ]; do
-    wget -c "$MODEL_URL" -O "$MODEL_PATH.part" && break
+    wget -c "$MODEL_URL" -O "$MODEL_PATH.part" >/dev/null 2>&1 &
+    wpid=$!
+    while kill -0 "$wpid" 2>/dev/null; do
+      sleep "$LOG_INTERVAL"
+      if [ -f "$MODEL_PATH.part" ]; then
+        cur="$(stat -c%s "$MODEL_PATH.part")"
+        if [ "$EXPECTED" -gt 0 ]; then
+          log "downloaded $((cur/1048576)) MiB / $((EXPECTED/1048576)) MiB ($((cur * 100 / EXPECTED))%)"
+        else
+          log "downloaded $((cur/1048576)) MiB"
+        fi
+      else
+        log "waiting for download to start"
+      fi
+    done
+    wait "$wpid" && break
     log "download interrupted, retry $attempt"
     attempt=$((attempt + 1))
     sleep 5
@@ -86,7 +111,7 @@ else
     die "size mismatch: got $actual, expected $EXPECTED"
   fi
   mv "$MODEL_PATH.part" "$MODEL_PATH"
-  log "model ready"
+  log "model ready, $((actual/1048576)) MiB"
 fi
 
 MODEL_MIB=$(( $(stat -c%s "$MODEL_PATH") / 1048576 ))
@@ -107,9 +132,24 @@ if [ -n "${TAVILY_API_KEY:-}${EXA_API_KEY:-}" ]; then
   node /app/server.mjs &
 fi
 
+log "versions: llama-server $(llama-server --version 2>&1 | head -1), node $(node --version 2>/dev/null || echo none)"
 log "model $MODEL_FILE ($((MODEL_MIB/1024)) GB) on $MODEL_DIR"
-log "context $CTX tokens, kv cache q8_0"
-log "llama-server on $BIND:$LLAMA_PORT, api key $LLM_KEY"
+log "context $CTX tokens, kv cache q8_0, vram ${TOTAL_VRAM_MIB}MiB"
+log "llama-server on $BIND:$LLAMA_PORT (api key is set, see LLM_API_KEY)"
+log "waiting for the server to answer on /health"
+
+(
+  i=0
+  while [ "$i" -lt 240 ]; do
+    if curl -sf -m 3 -o /dev/null "http://127.0.0.1:$LLAMA_PORT/health"; then
+      log "server is ready, open http://<public-address>/ and enter the api key"
+      exit 0
+    fi
+    i=$((i + 1))
+    sleep 5
+  done
+  log "server did not answer /health within 20 minutes, check the log above"
+) &
 
 exec llama-server \
   -m "$MODEL_PATH" \
