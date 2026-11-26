@@ -19,7 +19,10 @@ RUN mkdir -p /opt/llama \
     && wget -q "$LLAMA_URL" -O llama.tar.gz \
     && tar xzf llama.tar.gz \
     && rm -f llama.tar.gz \
-    && llama-server --version
+    && test -x cuda-12.8/llama-server \
+    && test -f cuda-12.8/libmtmd.so.1.0.0 \
+    && missing="$(ldd cuda-12.8/llama-server cuda-12.8/libllama-server-impl.so cuda-12.8/libggml-cuda.so.1.0.0 2>/dev/null | grep 'not found' | grep -v 'libcuda.so.1' || true)" \
+    && if [ -n "$missing" ]; then echo "unresolved: $missing" && exit 1; fi
 
 WORKDIR /app
 COPY proxy/server.mjs /app/server.mjs
