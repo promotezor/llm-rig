@@ -33,17 +33,22 @@ if [ -n "$STATUS_PORT" ] && command -v node >/dev/null 2>&1; then
 fi
 
 SSH_PORT="${SSH_PORT:-2222}"
-if [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+KEYS_RAW="$(printf '%s\n%s\n' "${SSH_PUBLIC_KEY:-}" "${SSH_PUBLIC_KEYS:-}")"
+KEYS_CLEAN="$(printf '%s' "$KEYS_RAW" | tr ';,' '\n\n' | sed 's/\\n/\
+/g' | grep -E '^(ssh-|ecdsa-|sk-)' || true)"
+KEY_COUNT="$(printf '%s' "$KEYS_CLEAN" | grep -c . || true)"
+
+if [ "${KEY_COUNT:-0}" -ge 1 ]; then
   mkdir -p /root/.ssh /run/sshd && chmod 700 /root/.ssh
-  printf '%s\n' "$SSH_PUBLIC_KEY" | tr -d '\r' > /root/.ssh/authorized_keys
+  printf '%s\n' "$KEYS_CLEAN" > /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
   if /usr/sbin/sshd -e -p "$SSH_PORT" 2>>"$LOG_FILE"; then
-    log "ssh is up on port $SSH_PORT for root (key from SSH_PUBLIC_KEY)"
+    log "ssh is up on port $SSH_PORT for root, $KEY_COUNT key(s) accepted"
   else
     log "warning: sshd did not start, debugging over ssh is unavailable"
   fi
 else
-  log "SSH_PUBLIC_KEY not set, skipping sshd (debug access disabled)"
+  log "no ssh keys given (SSH_PUBLIC_KEY / SSH_PUBLIC_KEYS), skipping sshd"
 fi
 
 MODEL_REPO="${MODEL_REPO:-mradermacher/ThinkingCap-Qwen3.8-27B-Uncensored-Heretic-GGUF}"
