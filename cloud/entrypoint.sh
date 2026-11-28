@@ -48,8 +48,12 @@ if [ "${KEY_COUNT:-0}" -ge 1 ]; then
   mkdir -p /root/.ssh /run/sshd && chmod 700 /root/.ssh
   printf '%s\n' "$KEYS_CLEAN" > /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
+  if ! ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1; then
+    log "generating ssh host keys for this container"
+    ssh-keygen -A >>"$LOG_FILE" 2>&1 || log "warning: could not generate ssh host keys"
+  fi
   if /usr/sbin/sshd -e -p "$SSH_PORT" 2>>"$LOG_FILE"; then
-    log "ssh is up on port $SSH_PORT for root, $KEY_COUNT key(s) accepted"
+    log "ssh is up on port $SSH_PORT for root, $KEY_COUNT key(s) accepted, host key $(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null | awk '{print $2}')"
   else
     log "warning: sshd did not start, debugging over ssh is unavailable"
   fi
