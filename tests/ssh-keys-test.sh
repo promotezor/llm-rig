@@ -10,7 +10,9 @@ docker rm -f "$NAME" >/dev/null 2>&1
 docker run -d --name "$NAME" --platform linux/amd64 \
   -v "$T/bin:/fakebin:ro" -v "$T/store:/store" \
   -e PATH=/fakebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  -e SSH_PUBLIC_KEY="$K1;$K2" \
+  -e SSH_PUBLIC_KEY="$K1" \
+  -e SSH_PUBLIC_KEY_2="$K2" \
+  -e SSH_KEYS="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITHIRDKEYTHIRDKEYTHIRDKEYTHIRDKEYTHIRDKEY00 third-key" \
   -e STATUS_PORT=8090 -e LLAMA_PORT=8090 \
   -e STATUS_FILE=/store/status.json -e LOG_FILE=/store/keys-test.log \
   -e MODEL_DIR=/store -e CTX=8192 \

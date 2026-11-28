@@ -33,7 +33,13 @@ if [ -n "$STATUS_PORT" ] && command -v node >/dev/null 2>&1; then
 fi
 
 SSH_PORT="${SSH_PORT:-2222}"
-KEYS_RAW="$(printf '%s\n%s\n' "${SSH_PUBLIC_KEY:-}" "${SSH_PUBLIC_KEYS:-}")"
+KEYS_RAW=""
+for kvar in SSH_PUBLIC_KEY SSH_PUBLIC_KEYS SSH_PUBLIC_KEY_2 SSH_PUBLIC_KEY_3 \
+            SSH_PUBLIC_KEY_4 SSH_PUBLIC_KEY_5 SSH_KEYS EXTRA_SSH_KEYS; do
+  kval="${!kvar:-}"
+  [ -n "$kval" ] && KEYS_RAW="$KEYS_RAW
+$kval"
+done
 KEYS_CLEAN="$(printf '%s' "$KEYS_RAW" | tr ';,' '\n\n' | sed 's/\\n/\
 /g' | grep -E '^(ssh-|ecdsa-|sk-)' || true)"
 KEY_COUNT="$(printf '%s' "$KEYS_CLEAN" | grep -c . || true)"
@@ -48,7 +54,7 @@ if [ "${KEY_COUNT:-0}" -ge 1 ]; then
     log "warning: sshd did not start, debugging over ssh is unavailable"
   fi
 else
-  log "no ssh keys given (SSH_PUBLIC_KEY / SSH_PUBLIC_KEYS), skipping sshd"
+  log "no ssh keys given (SSH_PUBLIC_KEY, SSH_PUBLIC_KEY_2..5, SSH_KEYS), skipping sshd"
 fi
 
 MODEL_REPO="${MODEL_REPO:-mradermacher/ThinkingCap-Qwen3.8-27B-Uncensored-Heretic-GGUF}"
